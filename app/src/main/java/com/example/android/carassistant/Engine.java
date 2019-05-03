@@ -5,17 +5,47 @@ import android.support.annotation.NonNull;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class Engine {
     private static List<String> commandKeywords = Arrays.asList("תתקשר", "התקשר", "צלצל", "תצלצל");
-    private List<String> displayNames;
-    private List<String> suggestions;
 
-    public Engine(List<String> displayNames) {
-        this.displayNames = displayNames;
-        this.suggestions = new ArrayList<>();
-        .
+    private List<Contact> contacts;
+    private Map<String, String> idToPhoneMap;
+    private List<Contact> suggestions;
+
+    public Engine() {
+        this.contacts = null;
+        this.idToPhoneMap = null;
+        this.suggestions = null;
+    }
+
+    public void setContacts(List<Contact> contacts) {
+        this.contacts = contacts;
+    }
+
+    public void setIdToPhoneMap(Map<String, String> idToPhoneMap) {
+        this.idToPhoneMap = idToPhoneMap;
+    }
+
+    public List<Contact> getSuggestions() {
+        return suggestions;
+    }
+
+    public boolean isPrepared() {
+        if (contacts != null && idToPhoneMap != null) {
+            fillContactsData();
+            return true;
+        }
+        else {
+            return false;
+        }
+    }
+
+    private void fillContactsData() {
+
     }
 
     public boolean parseCommand(String command){
@@ -36,7 +66,7 @@ public class Engine {
             else {
                 return false;
             }
-            suggestions = getSuggestions(name);
+            suggestions = evaluateSuggestions(name);
             return !suggestions.isEmpty();
         }
 
@@ -44,29 +74,29 @@ public class Engine {
 
     }
 
-    private List<String> getSuggestions(String[] name){
+    private List<Contact> evaluateSuggestions(String[] name){
         List<ScoredName> scoredNames = new ArrayList<>();
-        for (String displayName:displayNames) {
-            ScoredName scoredName = new ScoredName(displayName, name);
-            if (scoredName.getScore() > 5) {
+        for (Contact contact: contacts) {
+            ScoredName scoredName = new ScoredName(contact, name);
+            if (scoredName.getScore() > 0.5) {
                 scoredNames.add(scoredName);
             }
         }
         Collections.sort(scoredNames);
-        List<String> suggestions = new ArrayList<>();
+        List<Contact> suggestions = new ArrayList<>();
         for (ScoredName scoredName:scoredNames) {
-            suggestions.add(scoredName.getName());
+            suggestions.add(scoredName.getContact());
         }
         return suggestions;
     }
 
     private class ScoredName implements Comparable<ScoredName>{
 
-        private String name;
+        private Contact contact;
         private double score;
 
-        public ScoredName(String name, String[] comparedName) {
-            this.name = name;
+        public ScoredName(Contact contact, String[] comparedName) {
+            this.contact = contact;
             this.score = calculateNameScore(comparedName);
         }
 
@@ -77,7 +107,7 @@ public class Engine {
                 builder.append(' ');
             }
             String comparedName = builder.toString();
-            return similarity(comparedName, name);
+            return similarity(comparedName, contact.getDisplayName());
         }
 
         private double similarity(String s1, String s2) {
@@ -130,8 +160,8 @@ public class Engine {
             return 0;
         }
 
-        public String getName() {
-            return name;
+        public Contact getContact() {
+            return contact;
         }
 
         public double getScore() {

@@ -2,17 +2,16 @@ package com.example.android.carassistant;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
-import android.app.Activity;
-import android.app.LoaderManager;
-import android.content.ContentResolver;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
-import android.database.DatabaseUtils;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
 import android.provider.ContactsContract.Contacts;
+import android.provider.ContactsContract.CommonDataKinds.Phone;
+import android.speech.RecognizerIntent;
+import android.speech.tts.TextToSpeech;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
 import android.support.design.widget.FloatingActionButton;
@@ -23,54 +22,28 @@ import android.support.v4.content.ContextCompat;
 import android.support.v4.content.CursorLoader;
 import android.support.v4.content.Loader;
 import android.support.v4.widget.SimpleCursorAdapter;
-import android.support.v7.app.AppCompatActivity;
 import android.widget.ListView;
-import android.widget.Toolbar;
 import android.view.View;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.widget.TextView;
 
-import com.nuance.speechkit.Audio;
-import com.nuance.speechkit.DetectionType;
-import com.nuance.speechkit.Language;
-import com.nuance.speechkit.Recognition;
-import com.nuance.speechkit.RecognitionType;
-import com.nuance.speechkit.ResultDeliveryType;
-import com.nuance.speechkit.Session;
-import com.nuance.speechkit.Transaction;
-import com.nuance.speechkit.TransactionException;
-
-import android.provider.ContactsContract;
-import android.support.v4.app.Fragment;
-import android.widget.AdapterView;
 import android.support.v4.app.LoaderManager.LoaderCallbacks;
+import android.widget.Toast;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
-public class MainActivity extends FragmentActivity implements LoaderCallbacks{
+public class MainActivity extends FragmentActivity {
 
-    private Audio startEarcon;
-    private Audio stopEarcon;
-    private Audio errorEarcon;
-
-    private Session speechSession;
-    private Transaction recoTransaction;
-    private Transaction ttsTransaction;
-    private State state = State.IDLE;
-
+    private static final int RESULT_SPEECH = 0;
+    private static final String HEBREW_LOCALE_STR = "he";
+    private static final Locale HEBREW_LOCALE = new Locale(HEBREW_LOCALE_STR);
     private FloatingActionButton recordingButton;
     private TextView messageBox;
-
-    @SuppressLint("InlinedApi")
-    private static final String[] PROJECTION =
-            {
-                    Contacts._ID,
-                    Contacts.LOOKUP_KEY,
-                    Contacts.DISPLAY_NAME_PRIMARY
-
-            };
 
     // The column index for the _ID column
     private static final int CONTACT_ID_INDEX = 0;
@@ -89,22 +62,15 @@ public class MainActivity extends FragmentActivity implements LoaderCallbacks{
             Contacts.DISPLAY_NAME_PRIMARY
     };
 
-    private static final String SELECTION =
-            Contacts.DISPLAY_NAME_PRIMARY + " LIKE ?";
-    // Defines a variable for the search string
-    private String mSearchString = "%אופיר%";
-    // Defines the array to hold values that replace the ?
-    private String[] mSelectionArgs = { mSearchString };
-
     // Define a ListView object
-    ListView mContactsList;
+    private ListView mContactsList;
     // Define variables for the contact the user selects
     // The contact's _ID value
-    long mContactId;
+    private long mContactId;
     // The contact's LOOKUP_KEY
-    String mContactKey;
+    private String mContactKey;
     // A content URI for the selected contact
-    Uri mContactUri;
+    private Uri mContactUri;
     // An adapter that binds the result Cursor to the ListView
     private SimpleCursorAdapter mCursorAdapter;
 
@@ -112,150 +78,118 @@ public class MainActivity extends FragmentActivity implements LoaderCallbacks{
             android.R.id.text1
     };
 
-    private Transaction.Listener recoListener = new Transaction.Listener() {
-        @Override
-        public void onStartedRecording(Transaction transaction) {
-//            logs.append("\nonStartedRecording");
-            messageBox.setText("\nonStartedRecording");
+    private Engine engine;
+    private TextToSpeech mTts;
 
-            //We have started recording the users voice.
-            //We should update our state and start polling their volume.
-            setState(State.LISTENING);
-            startAudioLevelPoll();
+
+    private LoaderCallbacks phonesLoaderCallbacks = new LoaderCallbacks() {
+        @NonNull
+        @Override
+        public Loader onCreateLoader(int id, @Nullable Bundle args) {
+            Uri contactsUri = Phone.CONTENT_URI;
+            String[] PROJECTION = {
+                    Phone.CONTACT_ID,
+                    Phone.NUMBER
+            };
+
+            String selection = null;
+            String[] selectionArgs = null;
+            String sortOrder = null;
+
+            CursorLoader contactsLoader = new CursorLoader(MainActivity.this, contactsUri, PROJECTION, selection, selectionArgs, sortOrder);
+            return contactsLoader;
         }
 
         @Override
-        public void onFinishedRecording(Transaction transaction) {
-//            logs.append("\nonFinishedRecording");
+        public void onLoadFinished(@NonNull Loader loader, Object data) {
+            Cursor cursor = (Cursor) data;
+            Map<String, String> idToPhonesMap = getIdToPhoneMap(cursor);
+            if (engine != null) {
+                engine.setIdToPhoneMap(idToPhonesMap);
+            }
+        }
 
-            messageBox.setText("\nonFinishedRecording");
+        private Map<String, String> getIdToPhoneMap(Cursor phonesCursor) {
+            // TODO check the requested columns exist
 
-            //We have finished recording the users voice.
-            //We should update our state and stop polling their volume.
-            setState(State.PROCESSING);
-            stopAudioLevelPoll();
+            Map<String, String> idToPhonesMap = new HashMap<>();
+            phonesCursor.moveToFirst();
+            String[] colNmaes = phonesCursor.getColumnNames();
+            int idColumnIndex = phonesCursor.getColumnIndex(Phone.CONTACT_ID);
+            int phoneColumnIndex = phonesCursor.getColumnIndex(Phone.NUMBER);
+
+            while (phonesCursor.moveToNext()) {
+                String id = phonesCursor.getString(idColumnIndex);
+                String phone = phonesCursor.getString(phoneColumnIndex);
+
+                idToPhonesMap.put(id, phone);
+            }
+
+            phonesCursor.moveToFirst();
+            return idToPhonesMap;
         }
 
         @Override
-        public void onRecognition(Transaction transaction, Recognition recognition) {
-//            logs.append("\nonRecognition: " +
-            messageBox.setText(recognition.getText());
-            synthesize(recognition.getText());
-            //We have received a transcription of the users voice from the server.
-        }
+        public void onLoaderReset(@NonNull Loader loader) {
 
-        @Override
-        public void onSuccess(Transaction transaction, String s) {
-//            logs.append("\nonSuccess");
-
-//            messageBox.set
-//
-// Text("\nonFinishedRecording");
-
-            //Notification of a successful transaction.
-            setState(State.IDLE);
-        }
-
-        @Override
-        public void onError(Transaction transaction, String s, TransactionException e) {
-//            logs.append("\nonError: " + e.getMessage() + ". " + s);
-
-//            messageBox.setText(e.getMessage() + " " + e.getCode());
-
-            //Something went wrong. Check Configuration.java to ensure that your settings are correct.
-            //The user could also be offline, so be sure to handle this case appropriately.
-            //We will simply reset to the idle state.
-            setState(State.IDLE);
-        }
-    };
-    private List<String> displayNames;
-
-    /**
-     * Stop recording the user
-     */
-    private void stopRecording() {
-        recoTransaction.stopRecording();
-    }
-
-    /**
-     * Cancel the Reco transaction.
-     * This will only cancel if we have not received a response from the server yet.
-     */
-    private void cancel() {
-        recoTransaction.cancel();
-        setState(State.IDLE);
-    }
-
-    /* Audio Level Polling */
-
-    private Handler handler = new Handler();
-
-    /**
-     * Every 50 milliseconds we should update the volume meter in our UI.
-     */
-    private Runnable audioPoller = new Runnable() {
-        @Override
-        public void run() {
-            float level = recoTransaction.getAudioLevel();
-//            volumeBar.setProgress((int)level);
-            handler.postDelayed(audioPoller, 50);
         }
     };
 
-    /**
-     * Start polling the users audio level.
-     */
-    private void startAudioLevelPoll() {
-        audioPoller.run();
-    }
+    private LoaderCallbacks contactsLoaderCallbacks = new LoaderCallbacks() {
+        @NonNull
+        @Override
+        public Loader onCreateLoader(int id, @Nullable Bundle args) {
+            Uri contactsUri = Contacts.CONTENT_URI;
+            @SuppressLint("InlinedApi")
+            String[] PROJECTION = {
+                    Contacts._ID,
+                    Contacts.LOOKUP_KEY,
+                    Contacts.DISPLAY_NAME_PRIMARY,
+                    Contacts.HAS_PHONE_NUMBER
+            };
+            String selection = null;
+            String[] selectionArgs = null;
+            String sortOrder = null;
 
-    /**
-     * Stop polling the users audio level.
-     */
-    private void stopAudioLevelPoll() {
-        handler.removeCallbacks(audioPoller);
-//        volumeBar.setProgress(0);
-    }
-
-    @NonNull
-    @Override
-    public Loader onCreateLoader(int id, @Nullable Bundle args) {
-        Uri contactsUri = Contacts.CONTENT_URI;
-        String selection = null;
-        String[] selectionArgs = null;
-        String sortOrder = null;
-
-        CursorLoader contactsLoader = new CursorLoader(this, contactsUri, PROJECTION, selection, selectionArgs, sortOrder);
-        return contactsLoader;
-    }
-
-    @Override
-    public void onLoadFinished(@NonNull Loader loader, Object data) {
-        Cursor cursor = (Cursor) data;
-        mCursorAdapter.swapCursor(cursor);
-        displayNames = getAllDisplayNames(cursor);
-
-
-
-    }
-
-    private List<String> getAllDisplayNames(Cursor contactsCursor){
-        // TODO check there is a column named <Contacts.DISPLAY_NAME>
-        ArrayList<String> displayNames = new ArrayList<>();
-        contactsCursor.moveToFirst();
-        while(contactsCursor.moveToNext()){
-            String displayName = contactsCursor.getString(contactsCursor.getColumnIndex(Contacts.DISPLAY_NAME));
-            displayNames.add(displayName);
+            CursorLoader contactsLoader = new CursorLoader(MainActivity.this, contactsUri, PROJECTION, selection, selectionArgs, sortOrder);
+            return contactsLoader;
         }
-        contactsCursor.moveToFirst();
-        return displayNames;
-    }
 
-    @Override
-    public void onLoaderReset(@NonNull Loader loader) {
+        @Override
+        public void onLoadFinished(@NonNull Loader loader, Object data) {
+            Cursor cursor = (Cursor) data;
+            mCursorAdapter.swapCursor(cursor);
+            List<Contact> contacts = getAllContacts(cursor);
+            if (engine != null) {
+                engine.setContacts(contacts);
+            }
+        }
 
-    }
 
+        private List<Contact> getAllContacts(Cursor contactsCursor) {
+            // TODO check the requested columns exist
+            ArrayList<Contact> contacts = new ArrayList<>();
+            contactsCursor.moveToFirst();
+            int idColumnIndex = contactsCursor.getColumnIndex(Contacts._ID);
+            int displayNameColumnIndex = contactsCursor.getColumnIndex(Contacts.DISPLAY_NAME);
+            int hasPhoneNumberColumnIndex = contactsCursor.getColumnIndex(Contacts.HAS_PHONE_NUMBER);
+
+            while (contactsCursor.moveToNext()) {
+                String id = contactsCursor.getString(idColumnIndex);
+                String displayName = contactsCursor.getString(displayNameColumnIndex);
+                boolean hasPhoneNumber = contactsCursor.getInt(hasPhoneNumberColumnIndex) != 0;
+
+                contacts.add(new Contact(id, displayName, hasPhoneNumber, null));
+            }
+            contactsCursor.moveToFirst();
+            return contacts;
+        }
+
+        @Override
+        public void onLoaderReset(@NonNull Loader loader) {
+
+        }
+    };
 
     /* State Logic: IDLE -> LISTENING -> PROCESSING -> repeat */
 
@@ -279,21 +213,12 @@ public class MainActivity extends FragmentActivity implements LoaderCallbacks{
             @Override
             public void onClick(View view) {
                 Snackbar.make(view, "Listening", Snackbar.LENGTH_LONG).show();
-                toggleReco();
+                rocognizeCommand();
             }
         });
 
-        //Create a session
-        speechSession = Session.Factory.session(this, Configuration.SERVER_URI, Configuration.APP_KEY);
-
         messageBox = (TextView) findViewById(R.id.textView);
 
-        loadEarcons();
-
-        setState(State.IDLE);
-
-
-        // TODO
 
         // Gets the ListView from the View list of the parent activity
         mContactsList =
@@ -335,48 +260,92 @@ public class MainActivity extends FragmentActivity implements LoaderCallbacks{
             // Permission has already been granted
         }
 
+        // instatiate engine
+        engine = new Engine();
+
         // Initializes the loader
-        getSupportLoaderManager().initLoader(0, null, this);
+        getSupportLoaderManager().initLoader(0, null, contactsLoaderCallbacks);
+
+        getSupportLoaderManager().initLoader(1, null, phonesLoaderCallbacks);
+
+        mTts=new TextToSpeech(getApplicationContext(), new TextToSpeech.OnInitListener() {
+            @Override
+            public void onInit(int status) {
+                if(status != TextToSpeech.ERROR) {
+                    mTts.setLanguage(HEBREW_LOCALE);
+
+                }
+            }
+        });
+    }
+
+    private void rocognizeCommand() {
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, HEBREW_LOCALE_STR);
+        intent.putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", new String[]{HEBREW_LOCALE_STR, "en-US"});
+
+        try {
+            startActivityForResult(intent, RESULT_SPEECH);
+        } catch (ActivityNotFoundException a) {
+            Toast.makeText(getApplicationContext(), "Opps! Your device doesn’t support Speech to Text", Toast.LENGTH_SHORT).show();
+        }
 
     }
 
-    /**
-     * Speak the text that is in the ttsText EditText, using the language in the language EditText.
-     */
-    private void synthesize(String textToSpeak) {
-        //Setup our TTS transaction options.
-        Transaction.Options options = new Transaction.Options();
-        options.setLanguage(new Language(Configuration.LANGUAGE_CODE));
-        //options.setVoice(new Voice(Voice.SAMANTHA)); //optionally change the Voice of the speaker, but will use the default if omitted.
-
-        //Start a TTS transaction
-        ttsTransaction = speechSession.speakString(textToSpeak, options, new Transaction.Listener() {
-            @Override
-            public void onAudio(Transaction transaction, Audio audio) {
-//                logs.append("\nonAudio");
-
-                //The TTS audio has returned from the server, and has begun auto-playing.
-                ttsTransaction = null;
-//                toggleTTS.setText(getResources().getString(R.string.speak_string));
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        switch (requestCode) {
+            case RESULT_SPEECH: {
+                if (resultCode == RESULT_OK && null != data) {
+                    ArrayList<String> text = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+                    String command = null;
+                    if (!text.isEmpty()){
+                        command = text.get(0);
+                    }
+                    analyze(command);
+                }
+                break;
             }
+        }
+    }
 
-            @Override
-            public void onSuccess(Transaction transaction, String s) {
-//                logs.append("\nonSuccess");
-
-                //Notification of a successful transaction. Nothing to do here.
+    private void analyze(String command) {
+        if (command == null) {
+            String output = "מצטערת. לא הבנתי.";
+            respond(output);
+            return;
+        }
+        if (engine != null) {
+            while (!engine.isPrepared()) {
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
             }
-
-            @Override
-            public void onError(Transaction transaction, String s, TransactionException e) {
-//                logs.append("\nonError: " + e.getMessage() + ". " + s);
-
-                //Something went wrong. Check Configuration.java to ensure that your settings are correct.
-                //The user could also be offline, so be sure to handle this case appropriately.
-
-                ttsTransaction = null;
+            engine.parseCommand(command);
+            List<Contact> suggestions = engine.getSuggestions();
+            if (suggestions.isEmpty()) {
+                String output = "מצטערת. לא מצאתי איש קשר מתאים.";
+                respond(output);
             }
-        });
+            else {
+                String output = "מתקשרת אל " + suggestions.get(0).getDisplayName();
+                act(); // TODO define interface and abstract class Action
+                respond(output);
+            }
+        }
+    }
+
+    private void act() {
+
+    }
+
+    private void respond(String output) {
+        Toast.makeText(getApplicationContext(), output, Toast.LENGTH_SHORT).show();
+        mTts.speak(output, TextToSpeech.QUEUE_FLUSH, null, "1");
     }
 
     @Override
@@ -399,94 +368,6 @@ public class MainActivity extends FragmentActivity implements LoaderCallbacks{
         }
 
         return super.onOptionsItemSelected(item);
-    }
-
-    @Override
-    protected void onPause() {
-        switch (state) {
-            case IDLE:
-                // Nothing to do since there is no ongoing recognition
-                break;
-            case LISTENING:
-                // End the ongoing recording
-                stopRecording();
-                break;
-            case PROCESSING:
-                // End the ongoing recording and cancel the server recognition
-                // This cancel request will generate an internal onError callback even if the server
-                // returns a successful recognition.
-                cancel();
-                break;
-        }
-        super.onPause();
-    }
-
-
-    /* Reco transactions */
-    private void toggleReco() {
-        switch (state) {
-            case IDLE:
-                recognize();
-                break;
-            case LISTENING:
-                stopRecording();
-                break;
-            case PROCESSING:
-                cancel();
-                break;
-        }
-    }
-
-    /**
-     * Start listening to the user and streaming their voice to the server.
-     */
-    private void recognize() {
-        //Setup our Reco transaction options.
-        Transaction.Options options = new Transaction.Options();
-        options.setRecognitionType(resourceIDToRecoType());
-        options.setDetection(resourceIDToDetectionType());
-        options.setLanguage(new Language(Configuration.LANGUAGE_CODE.toString()));
-        options.setEarcons(startEarcon, stopEarcon, errorEarcon, null);
-
-        //Start listening
-        recoTransaction = speechSession.recognize(options, recoListener);
-    }
-
-    /**
-     * Set the state and update the button text.
-     */
-    private void setState(State newState) {
-        state = newState;
-//        switch (newState) {
-//            case IDLE:
-//                toggleReco.setText(getResources().getString(R.string.recognize));
-//                break;
-//            case LISTENING:
-//                toggleReco.setText(getResources().getString(R.string.listening));
-//                break;
-//            case PROCESSING:
-//                toggleReco.setText(getResources().getString(R.string.processing));
-//                break;
-//        }
-    }
-
-    /* Earcons */
-
-    private void loadEarcons() {
-        //Load all the earcons from disk
-        startEarcon = new Audio(this, R.raw.sk_start, Configuration.PCM_FORMAT);
-        stopEarcon = new Audio(this, R.raw.sk_stop, Configuration.PCM_FORMAT);
-        errorEarcon = new Audio(this, R.raw.sk_error, Configuration.PCM_FORMAT);
-    }
-
-    /* Helpers */
-
-    private RecognitionType resourceIDToRecoType() {
-        return RecognitionType.DICTATION;
-    }
-
-    private DetectionType resourceIDToDetectionType() {
-        return DetectionType.Short;
     }
 
 }

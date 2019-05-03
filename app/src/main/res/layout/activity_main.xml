@@ -80,7 +80,7 @@
             app:layout_anchor="@+id/recodingButton"
             app:layout_anchorGravity="bottom|center_horizontal" />
 
-        <ListView xmlns:android="http://schemas.android.com/apk/res/android"
+        <ListView
             android:id="@+id/contacts_list"
             android:layout_width="match_parent"
             android:layout_height="match_parent"/>
