@@ -1,40 +1,42 @@
 package com.example.android.carassistant;
 
+import java.util.List;
+
 public class Contact {
     private String id;
     private String displayName;
     private boolean hasPhoneNumber;
-    private String phoneNumber;
+    private List<String> phoneNumbers;
 
-    public Contact(String id, String displayName, boolean hasPhoneNumber, String phoneNumber) {
+    Contact(String id, String displayName, boolean hasPhoneNumber, List<String> phoneNumbers) {
         this.id = id;
         this.displayName = displayName;
         this.hasPhoneNumber = hasPhoneNumber;
-        this.phoneNumber = phoneNumber;
+        this.phoneNumbers = phoneNumbers;
     }
 
-    public String getId() {
+    String getId() {
         return id;
     }
 
-    public String getDisplayName() {
+    String getDisplayName() {
         return displayName;
     }
 
-    public String getPhoneNumber() {
+    public List<String> getPhoneNumbers() {
         if (hasPhoneNumber) {
-            return phoneNumber;
+            return phoneNumbers;
         }
         else {
             return null;
         }
     }
 
-    public boolean hasPhoneNumber() {
+    boolean hasPhoneNumber() {
         return hasPhoneNumber;
     }
 
-    public void setPhoneNumber(String phoneNumber) {
-        this.phoneNumber = phoneNumber;
+    void setPhoneNumbers(List<String> phoneNumbers) {
+        this.phoneNumbers = phoneNumbers;
     }
 }

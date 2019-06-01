@@ -1,77 +1,48 @@
 package com.example.android.carassistant;
 
 import android.support.annotation.NonNull;
+import android.util.Log;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-public class Engine {
-    private static List<String> commandKeywords = Arrays.asList("תתקשר", "התקשר", "צלצל", "תצלצל");
+public class ContactsResolver implements IResolver<String[], List<Contact>> {
 
-    private List<Contact> contacts;
-    private Map<String, String> idToPhoneMap;
-    private List<Contact> suggestions;
+    private static List<Contact> contacts = null;
+    private static Map<String, List<String>> idToPhoneMap = null;
+    private static boolean contactsArePrepared = false;
+    private List<Contact> matchingContacts;
 
-    public Engine() {
-        this.contacts = null;
-        this.idToPhoneMap = null;
-        this.suggestions = null;
+
+    public ContactsResolver() {
+        this.matchingContacts = null;
     }
 
-    public void setContacts(List<Contact> contacts) {
-        this.contacts = contacts;
-    }
-
-    public void setIdToPhoneMap(Map<String, String> idToPhoneMap) {
-        this.idToPhoneMap = idToPhoneMap;
-    }
-
-    public List<Contact> getSuggestions() {
-        return suggestions;
-    }
-
-    public boolean isPrepared() {
-        if (contacts != null && idToPhoneMap != null) {
-            fillContactsData();
-            return true;
-        }
-        else {
-            return false;
-        }
-    }
-
-    private void fillContactsData() {
-
-    }
-
-    public boolean parseCommand(String command){
-        String[] words = command.split("\\s+");
-        if (words.length < 2){
-            return false;
-        }
-
-        if (commandKeywords.contains(words[0])){
-            String[] name;
-            if (words[1].equals("אל") && words.length >= 3){
-                name = Arrays.copyOfRange(words, 2, words.length);
+    @Override
+    public void resolve(String[] name_range) {
+        if (contacts == null || idToPhoneMap == null) {
+            Log.i(Constants.TAG, "Couldn't resolve contacts because contacts or idToPhoneMap is not initialized yet.");
+            Log.d(Constants.TAG, "contacts = " + contacts.toString());
+            Log.d(Constants.TAG, "idToPhoneMap = " + idToPhoneMap.toString());
+            this.matchingContacts = null;
+        } else {
+            ContactsResolver.prepareContacts();
+            List<Contact> suggestions = evaluateSuggestions(name_range);
+            if (!suggestions.isEmpty()) {
+                matchingContacts = suggestions;
             }
-            else if (words[1].charAt(0) == 'ל'){
-                name = Arrays.copyOfRange(words, 1, words.length);
-                name[0] = words[1].substring(1, words[1].length());
-            }
-            else {
-                return false;
-            }
-            suggestions = evaluateSuggestions(name);
-            return !suggestions.isEmpty();
         }
+    }
 
-        return false;
-
+    private static void prepareContacts() {
+        if (!contactsArePrepared) {
+            for (Contact contact : contacts) {
+                contact.setPhoneNumbers(idToPhoneMap.get(contact.getId()));
+            }
+        }
+        contactsArePrepared = true;
     }
 
     private List<Contact> evaluateSuggestions(String[] name){
@@ -167,5 +138,18 @@ public class Engine {
         public double getScore() {
             return score;
         }
+    }
+
+    @Override
+    public List<Contact> getResolved() {
+        return matchingContacts;
+    }
+
+    public static void setContacts(List<Contact> contacts) {
+        ContactsResolver.contacts = contacts;
+    }
+
+    public static void setIdToPhoneMap(Map<String, List<String>> idToPhoneMap) {
+        ContactsResolver.idToPhoneMap = idToPhoneMap;
     }
 }

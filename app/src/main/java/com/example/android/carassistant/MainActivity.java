@@ -2,6 +2,7 @@ package com.example.android.carassistant;
 
 import android.Manifest;
 import android.annotation.SuppressLint;
+import android.app.Application;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -31,17 +32,17 @@ import android.widget.TextView;
 import android.support.v4.app.LoaderManager.LoaderCallbacks;
 import android.widget.Toast;
 
+import com.bugfender.sdk.Bugfender;
+
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 
 public class MainActivity extends FragmentActivity {
 
     private static final int RESULT_SPEECH = 0;
     private static final String HEBREW_LOCALE_STR = "he";
-    private static final Locale HEBREW_LOCALE = new Locale(HEBREW_LOCALE_STR);
     private FloatingActionButton recordingButton;
     private TextView messageBox;
 
@@ -78,7 +79,8 @@ public class MainActivity extends FragmentActivity {
             android.R.id.text1
     };
 
-    private Engine engine;
+    private ConversationFlow flow;
+    private IResolver resolver;
     private TextToSpeech mTts;
 
 
@@ -103,18 +105,18 @@ public class MainActivity extends FragmentActivity {
         @Override
         public void onLoadFinished(@NonNull Loader loader, Object data) {
             Cursor cursor = (Cursor) data;
-            Map<String, String> idToPhonesMap = getIdToPhoneMap(cursor);
-            if (engine != null) {
-                engine.setIdToPhoneMap(idToPhonesMap);
+            Map<String, List<String>> idToPhonesMap = getIdToPhoneMap(cursor);
+            if (resolver != null) {
+                ContactsResolver.setIdToPhoneMap(idToPhonesMap);
             }
         }
 
-        private Map<String, String> getIdToPhoneMap(Cursor phonesCursor) {
+        private Map<String, List<String>> getIdToPhoneMap(Cursor phonesCursor) {
             // TODO check the requested columns exist
 
-            Map<String, String> idToPhonesMap = new HashMap<>();
+            Map<String, List<String>> idToPhonesMap = new HashMap<>();
             phonesCursor.moveToFirst();
-            String[] colNmaes = phonesCursor.getColumnNames();
+            String[] colNames = phonesCursor.getColumnNames();
             int idColumnIndex = phonesCursor.getColumnIndex(Phone.CONTACT_ID);
             int phoneColumnIndex = phonesCursor.getColumnIndex(Phone.NUMBER);
 
@@ -122,9 +124,11 @@ public class MainActivity extends FragmentActivity {
                 String id = phonesCursor.getString(idColumnIndex);
                 String phone = phonesCursor.getString(phoneColumnIndex);
 
-                idToPhonesMap.put(id, phone);
+                if (!idToPhonesMap.containsKey(id)){
+                    idToPhonesMap.put(id, new ArrayList<>());
+                }
+                idToPhonesMap.get(id).add(phone);
             }
-
             phonesCursor.moveToFirst();
             return idToPhonesMap;
         }
@@ -160,8 +164,8 @@ public class MainActivity extends FragmentActivity {
             Cursor cursor = (Cursor) data;
             mCursorAdapter.swapCursor(cursor);
             List<Contact> contacts = getAllContacts(cursor);
-            if (engine != null) {
-                engine.setContacts(contacts);
+            if (resolver != null) {
+                ContactsResolver.setContacts(contacts);
             }
         }
 
@@ -208,12 +212,33 @@ public class MainActivity extends FragmentActivity {
 //        Toolbar toolbar = (Toolbar) findViewById(R.id.toolbar);
 //        setActionBar(toolbar);
 
+        Bugfender.init(this, "qv3QKXQC4KO3xDP8LYoDb0YgMBMOKhme", BuildConfig.DEBUG);
+        Bugfender.enableCrashReporting();
+        Bugfender.enableUIEventLogging( getApplication());
+        Bugfender.enableLogcatLogging(); // optional, if you want logs automatically collected from logcat
+
+        // instantiate the command parser resolver
+        resolver = new SimpleActionResolver();
+
+        mTts = new TextToSpeech(getApplicationContext(), new TextToSpeech.OnInitListener() {
+            @Override
+            public void onInit(int status) {
+                if(status != TextToSpeech.ERROR) {
+                    mTts.setLanguage(Constants.HEBREW_LOCALE);
+
+                }
+            }
+        });
+
+        // instantiate the conversation flow
+        flow = new ConversationFlow(this, resolver, mTts);
+
         recordingButton = (FloatingActionButton) findViewById(R.id.recodingButton);
         recordingButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
                 Snackbar.make(view, "Listening", Snackbar.LENGTH_LONG).show();
-                rocognizeCommand();
+                flow.request();
             }
         });
 
@@ -260,23 +285,10 @@ public class MainActivity extends FragmentActivity {
             // Permission has already been granted
         }
 
-        // instatiate engine
-        engine = new Engine();
-
         // Initializes the loader
         getSupportLoaderManager().initLoader(0, null, contactsLoaderCallbacks);
 
         getSupportLoaderManager().initLoader(1, null, phonesLoaderCallbacks);
-
-        mTts=new TextToSpeech(getApplicationContext(), new TextToSpeech.OnInitListener() {
-            @Override
-            public void onInit(int status) {
-                if(status != TextToSpeech.ERROR) {
-                    mTts.setLanguage(HEBREW_LOCALE);
-
-                }
-            }
-        });
     }
 
     private void rocognizeCommand() {
@@ -297,55 +309,13 @@ public class MainActivity extends FragmentActivity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         switch (requestCode) {
-            case RESULT_SPEECH: {
-                if (resultCode == RESULT_OK && null != data) {
-                    ArrayList<String> text = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
-                    String command = null;
-                    if (!text.isEmpty()){
-                        command = text.get(0);
-                    }
-                    analyze(command);
-                }
+            case Constants.SPEECH_REQUEST_CODE: {
+                flow.updateRequestResults(resultCode, data);
+                flow.analyze();
+                flow.respond();
                 break;
             }
         }
-    }
-
-    private void analyze(String command) {
-        if (command == null) {
-            String output = "מצטערת. לא הבנתי.";
-            respond(output);
-            return;
-        }
-        if (engine != null) {
-            while (!engine.isPrepared()) {
-                try {
-                    Thread.sleep(100);
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
-            }
-            engine.parseCommand(command);
-            List<Contact> suggestions = engine.getSuggestions();
-            if (suggestions.isEmpty()) {
-                String output = "מצטערת. לא מצאתי איש קשר מתאים.";
-                respond(output);
-            }
-            else {
-                String output = "מתקשרת אל " + suggestions.get(0).getDisplayName();
-                act(); // TODO define interface and abstract class Action
-                respond(output);
-            }
-        }
-    }
-
-    private void act() {
-
-    }
-
-    private void respond(String output) {
-        Toast.makeText(getApplicationContext(), output, Toast.LENGTH_SHORT).show();
-        mTts.speak(output, TextToSpeech.QUEUE_FLUSH, null, "1");
     }
 
     @Override
